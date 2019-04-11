@@ -1,3 +1,6 @@
+# 用自己代码生成的仓库
+test_repo/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
