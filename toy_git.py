@@ -1,5 +1,7 @@
 import collections, hashlib, os, struct
-import zlib, time, subprocess
+import zlib, time, subprocess, requests
+
+from user import *
 
 
 # git index (.git/index) 里面的一个入口
@@ -21,10 +23,51 @@ def read_index(path):
     entrys = []
     return entrys
 
+
+def extract_lines(data):
+    """
+    data 长这样
+    b'001f# service=git-receive-pack\n0000009d47241f74a2b076321f1870d73ea694c85bcd7e30 refs/heads/master\x00report-status delete-refs side-band-64k quiet atomic ofs-delta agent=git/github-g4f6c801f9475\n0000'
+    
+    最后要变成
+    [b'# service=git-receive-pack\n', b'', b'47241f74a2b076321f1870d73ea694c85bcd7e30 refs/heads/master\x00report-status delete-refs side-band-64k quiet atomic ofs-delta agent=git/github-g4f6c801f9475\n', b'']
+    前面的数字代表后面数据的长度
+
+    每四个读取
+    """
+    lines = []
+    i = 0
+    for _ in range(1000):
+        length = int(data[i:i+4], 16)
+        line = data[i+4: i+length]
+        lines.append(line)
+        if length == 0:
+            i += 4
+        else :
+            i += length
+
+        if i >= len(data):
+            break
+
+    return lines
+
+def http_request(url, username, password):
+    response = requests.get(url, auth=(username, password))
+    response.raise_for_status()
+    return response.content
+
 class ToyGit():
     def __init__(self, root):
         self.root = root
         self.git = os.path.join(root, '.git')
+
+    def write_file(self, path, data):
+        path = os.path.join(self.root, path)
+        return write_file(path, data)
+
+    def read_file(self, path):
+        path = os.path.join(self.root, path)
+        return read_file(path)
 
     def init(self, repo_path):
         """
@@ -41,7 +84,7 @@ class ToyGit():
         dirs = ['objects', 'refs', 'refs/heads']
         for d in dirs:
             os.mkdir(os.path.join(repo_path, '.git', d))
-        write_file(os.path.join(repo_path, '.git', 'HEAD'), b'ref: refs/heads/master')
+        self.write_file(os.path.join('.git', 'HEAD'), b'ref: refs/heads/master')
         print('initialized empty repository: {}'.format(repo_path))
 
     def read_index(self):
@@ -53,7 +96,7 @@ class ToyGit():
         5. 文件名后面是 n 个 b'\x00' 这 n 个用来凑 8 的倍数
         """
         try:
-            data = read_file(os.path.join(self.git, 'index'))
+            data = self.read_file('.git/index')
         except FileNotFoundError:
             return []
 
@@ -93,7 +136,7 @@ class ToyGit():
         full_data = header + b'\x00' + data
         sha1 = hashlib.sha1(full_data).hexdigest()
         if write:
-            path = os.path.join('.git', 'objects', sha1[:2], sha1[2:])
+            path = os.path.join(self.root, '.git', 'objects', sha1[:2], sha1[2:])
             if not os.path.exists(path):
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 write_file(path, zlib.compress(full_data))
@@ -124,7 +167,7 @@ class ToyGit():
         all_data = header + b''.join(packed_entrys)
         digest = hashlib.sha1(all_data).digest()
         all_data += digest
-        write_file(os.path.join(self.git, 'index'), all_data)
+        self.write_file('.git/index', all_data)
     
     def write_tree(self):
         """
@@ -132,6 +175,8 @@ class ToyGit():
             写法与普通文件一样，
             tree_entry mode_path + b'\x00' + index 的 entry.sha1
             model_path = '{:o} {}'.format(entry.mode, entry.path)
+        
+            tree 里面放着上一次 commit 之前的 add 
         """
         tree_entrys = []
         for entry in self.read_index():
@@ -148,6 +193,9 @@ class ToyGit():
         """
         只支持文件 不支持目录和 .
         而且只支持根目录的文件
+        不支持删除
+
+        index 是当前 add 的文件
 
         1. 标准化路径不能有 \\
         2. 读取所有的索引
@@ -178,25 +226,22 @@ class ToyGit():
         """
         master_path = os.path.join('.git', 'refs', 'heads', 'master')
         try:
-            return read_file(master_path).decode().strip()
+            return self.read_file(master_path).decode().strip()
         except FileNotFoundError:
             return None
 
-    def commit(self, message, author=None):
+    def commit(self, message, author=None, email=None):
         """
         提交：
         1. 把当前 index 写入树中
-        2. 得到当前仓库 master 在 ./git/refs/heads/master 中
-        3. 讲所有的数据放在一起 [上一个 master, author, committer, '', messge, '']
+        2. 得到上一次提交的 commit 在 ./git/refs/heads/master 中
+        3. 讲所有的数据放在一起 [当前 index， 上一次提交的 commit, author, committer, '', messge, '']
         4. 将这些内容通过 hash_object 写入 objects 文件夹中 commit
         """
         tree = self.write_tree()
         parent = self.get_local_master_hash()
-        if author is None:
-            author = '{} <{}>'.format(
-                subprocess.run(['git', 'config', '--global', 'user.name'], stdout=subprocess.PIPE).stdout.decode().strip(), 
-                subprocess.run(['git', 'config', '--global', 'user.email'], stdout=subprocess.PIPE).stdout.decode().strip())
-        
+        author = '{} <{}>'.format(author, email)
+
         timestamp = int(time.mktime(time.localtime()))
         utc_offset = -time.timezone
         # 提交时间，我实在不是很理解他是怎么得到的，所以就抄了
@@ -217,19 +262,45 @@ class ToyGit():
         data = '\n'.join(lines).encode()
         sha1 = self.hash_object(data, 'commit')
         master_path = os.path.join('.git', 'refs', 'heads', 'master')
-        write_file(master_path, (sha1 + '\n').encode())
+        self.write_file(master_path, (sha1 + '\n').encode())
         print('committed to master: {:7}'.format(sha1))
         return sha1
 
+    def get_remote_master_hash(self, git_url, username, password):
+        url = git_url + '/info/refs?service=git-receive-pack'
+        res = http_request(url, username, password)
+        lines = extract_lines(res)
+        assert lines[0] == b'# service=git-receive-pack\n'
+        assert lines[1] == b''
+        if lines[2][:40] == b'0' * 40:
+            return None
 
+        master_sha1, master_ref = lines[2].split(b'\x00')[0].split()
+        assert master_ref == b'refs/heads/master'
+        assert len(master_sha1) == 40
+        return master_sha1.decode()
+
+    def find_missing_objects(self, local_sha1, remote_sha1):
         
+        
+    
+    def push(self, git_url, username=None, password=None):
+        """
+        1. 得到
+        """
+        assert username != None and password !=None, 'please enter username and password'
+        remote_sha1 = self.get_remote_master_hash(git_url, username, password)
+        local_sha1 = self.get_local_master_hash()
+        missing = self.find_missing_objects(local_sha1, remote_sha1)
 
 def main():
     tg = ToyGit('/home/tenshine/Desktop/toy_git/test_repo')
-    tg.init(os.path.join(tg.root))
-    # tg.read_index()
-    tg.add(['test.py'])
-    tg.commit('提交 test.py')
+    # tg.init(os.path.join(tg.root))
+    # # tg.read_index()
+    # tg.add(['test.py'])
+    # tg.commit('提交 test.py', GIT_USER_NAME, GIT_USER_EMAIL)
+    tg.push(GIT_URL, GIT_USERNAME, GIT_PASSWORD)
+
 
 if __name__ == "__main__":
     main()
