@@ -1,7 +1,8 @@
 # 用自己代码生成的仓库
 test_repo/
 
-./user.py
+user.py
+toy_git.xmind
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

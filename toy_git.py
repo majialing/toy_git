@@ -1,7 +1,16 @@
-import collections, hashlib, os, struct
-import zlib, time, subprocess, requests
+import collections, hashlib, os, struct, enum
+import zlib, time, subprocess, requests, urllib
 
 from user import *
+
+
+class ObjectType(enum.Enum):
+    """
+    枚举类    
+    """
+    commit = 1
+    tree = 2
+    blob = 3
 
 
 # git index (.git/index) 里面的一个入口
@@ -22,6 +31,19 @@ def read_file(path):
 def read_index(path):
     entrys = []
     return entrys
+
+
+def build_lines_data(lines):
+    """
+        给服务器发送数据的一些格式，直接复制粘贴了
+    """
+    result = []
+    for line in lines:
+        result.append('{:04x}'.format(len(line) + 5).encode())
+        result.append(line)
+        result.append(b'\n')
+    result.append(b'0000')
+    return b''.join(result)
 
 
 def extract_lines(data):
@@ -51,10 +73,15 @@ def extract_lines(data):
 
     return lines
 
-def http_request(url, username, password):
-    response = requests.get(url, auth=(username, password))
-    response.raise_for_status()
-    return response.content
+def http_request(url, username, password, data=None):
+    password_manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+    password_manager.add_password(None, url, username, password)
+    auth_handler = urllib.request.HTTPBasicAuthHandler(password_manager)
+    opener = urllib.request.build_opener(auth_handler)
+    f = opener.open(url, data=data)
+    return f.read()
+
+
 
 class ToyGit():
     def __init__(self, root):
@@ -68,6 +95,22 @@ class ToyGit():
     def read_file(self, path):
         path = os.path.join(self.root, path)
         return read_file(path)
+
+
+    def encode_pack_object(self, obj):
+
+        obj_type, data = self.read_object(obj)
+        type_num = ObjectType[obj_type].value
+        size = len(data)
+        byte = (type_num << 4) | (size & 0x0f)
+        size >>= 4
+        header = []
+        while size:
+            header.append(byte | 0x80)
+            byte = size & 0x7f
+            size >>= 7
+        header.append(byte)
+        return bytes(header) + zlib.compress(data)
 
     def init(self, repo_path):
         """
@@ -280,23 +323,105 @@ class ToyGit():
         assert len(master_sha1) == 40
         return master_sha1.decode()
 
+
+    def read_tree(self, tree_sha1):
+        obj_type, data = self.read_object(tree_sha1)
+        i = 0
+        entrys = []
+        while True:
+            end = data.find(b'\x00', i)
+            if end == -1:
+                break
+            mode_str, path = data[i:end].decode().split()
+            mode = int(mode_str, 8)
+            digest = data[end + 1:end + 21]
+            entrys.append((mode, path, digest.hex()))
+            i = end + 21
+        return entrys
+            
+
+
+    def find_tree_objects(self, tree_sha1):
+        objects = {tree_sha1}
+        for mode, path, sha1 in self.read_tree(tree_sha1):
+            objects.add(sha1)
+        return objects
+
+    def read_object(self, object_sha1):
+        print('object_sha1', object_sha1)
+        obj_path = os.path.join('.git', 'objects', object_sha1[:2], object_sha1[2:])
+        print('obj_data', obj_path)
+        obj_data = self.read_file(obj_path)
+        full_data = zlib.decompress(obj_data)
+        nul_index = full_data.index(b'\x00')
+        header = full_data[:nul_index]
+        obj_type, size_str = header.decode().split()
+        size = int(size_str)
+        data = full_data[nul_index + 1:]
+        assert size == len(data), 'expected size {}, got {} bytes'.format(
+            size, len(data))
+        return (obj_type, data)
+
+    def find_commit_objects(self, commit_sha1):
+        """
+        1. 通过 sha1 找到 objects 文件所在位置并读取
+        """
+        objects = {commit_sha1}
+        obj_type, commit = self.read_object(commit_sha1)
+        assert obj_type == 'commit'
+        lines = commit.decode().split('\n')
+        # 找到第一个 tree sha1
+        tree = next(l[5:45] for l in lines if l.startswith('tree '))
+        objects.update(self.find_tree_objects(tree))
+        # 找到所有的 parent
+        parents = (l[7:47] for l in lines if l.startswith('parent '))
+        for parent in parents:
+            objects.update(self.find_commit_objects(parent)) 
+        print('objects ', objects)
+        return objects
+
     def find_missing_objects(self, local_sha1, remote_sha1):
+        local_objects = self.find_commit_objects(local_sha1)
+        if remote_sha1 is None:
+            return local_objects
+        remote_objects = self.find_commit_objects(remote_sha1)
+        return local_objects - remote_objects
         
-        
-    
+    def creat_pack(self, objects):
+        header = struct.pack('!4sLL', b'PACK', 2, len(objects))
+        body = b''.join(self.encode_pack_object(o) for o in sorted(objects))
+        contents = header + body
+        sha1 = hashlib.sha1(contents).digest()
+        data = contents + sha1
+        return data
+
     def push(self, git_url, username=None, password=None):
         """
         1. 得到
         """
         assert username != None and password !=None, 'please enter username and password'
         remote_sha1 = self.get_remote_master_hash(git_url, username, password)
+        print('remote_sha1 ', remote_sha1)
         local_sha1 = self.get_local_master_hash()
         missing = self.find_missing_objects(local_sha1, remote_sha1)
+        print('updating remote master from {} to {} ({} object{})'.format(
+            remote_sha1 or 'no commits', local_sha1, len(missing),
+            '' if len(missing) == 1 else 's'))
+        lines = ['{} {} refs/heads/master\x00 report-status'.format(
+            remote_sha1 or ('0' * 40), local_sha1).encode()]
+        data = build_lines_data(lines) + self.creat_pack(missing)
+        print('data ', data)
+        url = 'https://gitee.com/tenshine/toy_git.git/git-receive-pack'
+        response = http_request(url, username, password, data)
+        lines = extract_lines(response)
+        
+
+
 
 def main():
     tg = ToyGit('/home/tenshine/Desktop/toy_git/test_repo')
     # tg.init(os.path.join(tg.root))
-    # # tg.read_index()
+    # tg.read_index()
     # tg.add(['test.py'])
     # tg.commit('提交 test.py', GIT_USER_NAME, GIT_USER_EMAIL)
     tg.push(GIT_URL, GIT_USERNAME, GIT_PASSWORD)
