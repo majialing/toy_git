@@ -442,9 +442,6 @@ class ToyGit():
         response = http_request(url, username, password, 'POST', data)
         lines = extract_lines(response)
         
-        
-
-
 
 def main():
     repo_path = os.getcwd()
