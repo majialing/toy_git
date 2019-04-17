@@ -73,13 +73,15 @@ def extract_lines(data):
 
     return lines
 
-def http_request(url, username, password, data=None):
-    password_manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-    password_manager.add_password(None, url, username, password)
-    auth_handler = urllib.request.HTTPBasicAuthHandler(password_manager)
-    opener = urllib.request.build_opener(auth_handler)
-    f = opener.open(url, data=data)
-    return f.read()
+def http_request(url, username, password, method='GET', data=None):
+    r = None
+    if method == 'GET':
+        r = requests.get(url, auth=(username, password), data=data)
+    else:
+        print('POST ', data)
+        r = requests.post(url, auth=(username, password), data=data)
+    # print('http_request content', r.content)
+    return r.content
 
 
 
@@ -348,9 +350,7 @@ class ToyGit():
         return objects
 
     def read_object(self, object_sha1):
-        print('object_sha1', object_sha1)
         obj_path = os.path.join('.git', 'objects', object_sha1[:2], object_sha1[2:])
-        print('obj_data', obj_path)
         obj_data = self.read_file(obj_path)
         full_data = zlib.decompress(obj_data)
         nul_index = full_data.index(b'\x00')
@@ -377,7 +377,6 @@ class ToyGit():
         parents = (l[7:47] for l in lines if l.startswith('parent '))
         for parent in parents:
             objects.update(self.find_commit_objects(parent)) 
-        print('objects ', objects)
         return objects
 
     def find_missing_objects(self, local_sha1, remote_sha1):
@@ -401,7 +400,6 @@ class ToyGit():
         """
         assert username != None and password !=None, 'please enter username and password'
         remote_sha1 = self.get_remote_master_hash(git_url, username, password)
-        print('remote_sha1 ', remote_sha1)
         local_sha1 = self.get_local_master_hash()
         missing = self.find_missing_objects(local_sha1, remote_sha1)
         print('updating remote master from {} to {} ({} object{})'.format(
@@ -410,9 +408,8 @@ class ToyGit():
         lines = ['{} {} refs/heads/master\x00 report-status'.format(
             remote_sha1 or ('0' * 40), local_sha1).encode()]
         data = build_lines_data(lines) + self.creat_pack(missing)
-        print('data ', data)
-        url = 'https://gitee.com/tenshine/toy_git.git/git-receive-pack'
-        response = http_request(url, username, password, data)
+        url = git_url + '/git-receive-pack'
+        response = http_request(url, username, password, 'POST', data)
         lines = extract_lines(response)
         
 
@@ -420,10 +417,9 @@ class ToyGit():
 
 def main():
     tg = ToyGit('/home/tenshine/Desktop/toy_git/test_repo')
-    # tg.init(os.path.join(tg.root))
-    # tg.read_index()
-    # tg.add(['test.py'])
-    # tg.commit('提交 test.py', GIT_USER_NAME, GIT_USER_EMAIL)
+    tg.init(os.path.join(tg.root))
+    tg.add(['test4.py'])
+    tg.commit('test4.py', GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL)
     tg.push(GIT_URL, GIT_USERNAME, GIT_PASSWORD)
 
 
