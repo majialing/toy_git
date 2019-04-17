@@ -35,7 +35,7 @@ def read_index(path):
 
 def build_lines_data(lines):
     """
-        给服务器发送数据的一些格式，直接复制粘贴了
+    给服务器发送数据的一些格式，复制粘贴
     """
     result = []
     for line in lines:
@@ -59,7 +59,7 @@ def extract_lines(data):
     """
     lines = []
     i = 0
-    for _ in range(1000):
+    while True:
         length = int(data[i:i+4], 16)
         line = data[i+4: i+length]
         lines.append(line)
@@ -100,6 +100,9 @@ class ToyGit():
 
 
     def encode_pack_object(self, obj):
+        """
+        打包文件，固定格式，复制粘贴
+        """
 
         obj_type, data = self.read_object(obj)
         type_num = ObjectType[obj_type].value
@@ -267,7 +270,8 @@ class ToyGit():
 
     def get_local_master_hash(self):
         """
-        得到 master
+        得到 local commit 
+        存在 .git/refs/heads/master 中
         """
         master_path = os.path.join('.git', 'refs', 'heads', 'master')
         try:
@@ -312,8 +316,17 @@ class ToyGit():
         return sha1
 
     def get_remote_master_hash(self, git_url, username, password):
+        """
+        给 git_url + '/info/refs?service=git-receive-pack' 发送 get 请求
+        得到
+        b'001f# service=git-receive-pack\n0000009df4ec14ac450c26a434bed650df3270eadbac3676 refs/heads/master\x00
+        report-status delete-refs side-band-64k quiet atomic ofs-delta agent=git/github-g810e442cedb5\n0000'
+        这样的二进制
+        里面存着远程仓库的 commit
+        """
         url = git_url + '/info/refs?service=git-receive-pack'
         res = http_request(url, username, password)
+
         lines = extract_lines(res)
         assert lines[0] == b'# service=git-receive-pack\n'
         assert lines[1] == b''
@@ -327,7 +340,11 @@ class ToyGit():
 
 
     def read_tree(self, tree_sha1):
+        """
+        与 write_tree 相反
+        """
         obj_type, data = self.read_object(tree_sha1)
+        assert obj_type == 'tree'
         i = 0
         entrys = []
         while True:
@@ -344,6 +361,11 @@ class ToyGit():
 
 
     def find_tree_objects(self, tree_sha1):
+        """
+        由于只提交单个文件，所以不去判断 mode。
+
+        把 tree 里面的 sha1（objetcs 文件夹里面的文件路径） 
+        """
         objects = {tree_sha1}
         for mode, path, sha1 in self.read_tree(tree_sha1):
             objects.add(sha1)
@@ -364,7 +386,11 @@ class ToyGit():
 
     def find_commit_objects(self, commit_sha1):
         """
-        1. 通过 sha1 找到 objects 文件所在位置并读取
+        1. 通过 sha1 找到 objects 里文件所在位置并读取
+        2. 读取里面的 tree 的 sha1
+        3. 把 tree 的 sha1 放进 set 里面
+        4. 由于每次 write_tree 是把 [上一次 push 之后 到这次 add 之后] 的 index 写入 objects 的 tree 文件中
+            所以要递归向上找到所有的 parent 并合并得到所有的文件
         """
         objects = {commit_sha1}
         obj_type, commit = self.read_object(commit_sha1)
@@ -376,10 +402,15 @@ class ToyGit():
         # 找到所有的 parent
         parents = (l[7:47] for l in lines if l.startswith('parent '))
         for parent in parents:
-            objects.update(self.find_commit_objects(parent)) 
+            objects.update(self.find_commit_objects(parent))
+
         return objects
 
     def find_missing_objects(self, local_sha1, remote_sha1):
+        """
+        local_objects 和 remote_objects 都是 set 类
+        两者相减得到不一样的地方
+        """
         local_objects = self.find_commit_objects(local_sha1)
         if remote_sha1 is None:
             return local_objects
@@ -396,7 +427,11 @@ class ToyGit():
 
     def push(self, git_url, username=None, password=None):
         """
-        1. 得到
+        1. 得到远程仓库的 commit 
+        2. 拿到 push 之前的 commit
+        3. 从 objects 文件里面的， 拿到两次 commit
+        4. 通过 commit 里面的 tree 比较 commit 所提交的文件的不同
+        5. 打包上传所差的文件 
         """
         assert username != None and password !=None, 'please enter username and password'
         remote_sha1 = self.get_remote_master_hash(git_url, username, password)
@@ -418,8 +453,8 @@ class ToyGit():
 def main():
     tg = ToyGit('/home/tenshine/Desktop/toy_git/test_repo')
     tg.init(os.path.join(tg.root))
-    tg.add(['test4.py'])
-    tg.commit('test4.py', GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL)
+    tg.add(['test5.py'])
+    tg.commit('test5.py', GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL)
     tg.push(GIT_URL, GIT_USERNAME, GIT_PASSWORD)
 
 
