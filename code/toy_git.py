@@ -78,9 +78,7 @@ def http_request(url, username, password, method='GET', data=None):
     if method == 'GET':
         r = requests.get(url, auth=(username, password), data=data)
     else:
-        print('POST ', data)
         r = requests.post(url, auth=(username, password), data=data)
-    # print('http_request content', r.content)
     return r.content
 
 
@@ -199,6 +197,8 @@ class ToyGit():
             如果 entry + path 长度是 8 的倍数那么添加 8 个 b'\x00'
             这里有一个小技巧 可以看我的博客
             https://www.jianshu.com/p/570b61384720
+
+        4. 把 add 过的文件都放入 index 中。也就是这次 add + 之前 add
         """
         signature, version, num_entries = b'DIRC', 2, len(entrys)
         header = struct.pack('!4sLL', signature, version, num_entries)
@@ -219,12 +219,10 @@ class ToyGit():
     
     def write_tree(self):
         """
-            把当前的 index 写入树中
-            写法与普通文件一样，
-            tree_entry mode_path + b'\x00' + index 的 entry.sha1
-            model_path = '{:o} {}'.format(entry.mode, entry.path)
-        
-            tree 里面放着上一次 commit 之前的 add 
+        把当前的 index 写入树中
+        写法与普通文件一样，
+        tree_entry mode_path + b'\x00' + index 的 entry.sha1
+        model_path = '{:o} {}'.format(entry.mode, entry.path)
         """
         tree_entrys = []
         for entry in self.read_index():
@@ -243,7 +241,6 @@ class ToyGit():
         而且只支持根目录的文件
         不支持删除
 
-        index 是当前 add 的文件
 
         1. 标准化路径不能有 \\
         2. 读取所有的索引
@@ -389,8 +386,6 @@ class ToyGit():
         1. 通过 sha1 找到 objects 里文件所在位置并读取
         2. 读取里面的 tree 的 sha1
         3. 把 tree 的 sha1 放进 set 里面
-        4. 由于每次 write_tree 是把 [上一次 push 之后 到这次 add 之后] 的 index 写入 objects 的 tree 文件中
-            所以要递归向上找到所有的 parent 并合并得到所有的文件
         """
         objects = {commit_sha1}
         obj_type, commit = self.read_object(commit_sha1)
@@ -447,14 +442,16 @@ class ToyGit():
         response = http_request(url, username, password, 'POST', data)
         lines = extract_lines(response)
         
+        
 
 
 
 def main():
-    tg = ToyGit('/home/tenshine/Desktop/toy_git/test_repo')
+    repo_path = os.getcwd()
+    tg = ToyGit(repo_path)
     tg.init(os.path.join(tg.root))
-    tg.add(['test5.py'])
-    tg.commit('test5.py', GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL)
+    tg.add(['toy_git.py'])
+    tg.commit('toy_git.py', GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL)
     tg.push(GIT_URL, GIT_USERNAME, GIT_PASSWORD)
 
 
