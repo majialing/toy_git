@@ -2,9 +2,7 @@
 
 
 
-参考大神的[仓库](https://github.com/benhoyt/pygit)和[文章](https://benhoyt.com/writings/pygit/)比较彻底的学习了 Git 的原理。在自己的代码中实现了 git init、add、commit、push 这几个基本操作。
-
-
+参考大神的 [仓库](https://github.com/benhoyt/pygit) 和 [文章](https://benhoyt.com/writings/pygit/) 比较彻底的学习了 Git 的原理。在代码中实现了 git init、add、commit、push 这几个基本操作。
 
 ## 介绍
 
@@ -63,6 +61,6 @@
 
 ## 最后
 
-扫个码我们做朋友吧！***\*顺便点个 star 呗！\****
+扫个码我们做朋友吧！***顺便点个 star 呗！***
 
 ![](https://github.com/TensShinet/learn_statistical-learning-method/blob/master/images/wx.png?raw=true)
