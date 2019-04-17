@@ -441,6 +441,14 @@ class ToyGit():
         url = git_url + '/git-receive-pack'
         response = http_request(url, username, password, 'POST', data)
         lines = extract_lines(response)
+
+        assert len(lines) >= 2, \
+            'expected at least 2 lines, got {}'.format(len(lines))
+        assert lines[0] == b'unpack ok\n', \
+            "expected line 1 b'unpack ok', got: {}".format(lines[0])
+        assert lines[1] == b'ok refs/heads/master\n', \
+            "expected line 2 b'ok refs/heads/master\n', got: {}".format(lines[1])
+
         
 
 def main():
